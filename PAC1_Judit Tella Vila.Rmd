@@ -1,0 +1,298 @@
+---
+title: "PAC1"
+author: "Judit Tella Vila"
+date: "2025-04-02"
+output:
+  word_document: default
+  html_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1.  Seleccioneu i descarregueu un dataset de metabolòmica, que podeu
+    obtenir de
+    [metabolomicsWorkbench](https://www.metabolomicsworkbench.org/) o
+    d'[aquest
+    repositori](https://github.com/nutrimetabolomics/metaboData) de
+    GitHub.
+
+    ```{r}
+    #mira si el paquet "BiocManager" està instal·lat
+    #"requireNamespace" retorna TRUE si el paquet existeix, FALSE si no
+    #quietly = TRUE per no veure missatges redundants i innecessaris.
+    if (!requireNamespace("BiocManager", quietly = TRUE))
+        install.packages("BiocManager")  #si no està instal·lat, el descarrega
+
+    #fem quelcom similar a l'anterior però amb un altre paquet
+    if (!require(GEOquery)) {
+        # Si no hi és, el descarrega i instal·la
+        BiocManager::install("GEOquery")
+    }
+
+
+
+    ```
+
+    En aquest cas he triat un dels estudis de github: "CIMBC" de
+    l'estudi Chan et al. (2016) en el British Journal of Cancer.
+
+    ```{r}
+    #condicional per instal·lar els paquets si no els hi tenim ja
+    if (!require("SummarizedExperiment")) 
+      #install.packages("SummarizedExperiment")
+       BiocManager::install("SummarizedExperiment")
+
+    if (!require("readxl")) 
+      install.packages("readxl")
+
+    #carreguem paquets
+    library(SummarizedExperiment)
+    library(readxl)
+
+    #llegim les dades escollides que en el format original estan en les dues fulles de l'excel
+    data <- read_excel("GastricCancer_NMR.xlsx", sheet = 1)
+    head(data)
+    peak <- read_excel("GastricCancer_NMR.xlsx", sheet = 2)
+    head (peak)
+    ```
+
+2.  Crea un objecte de classe *SummarizedExperiment* que contingui les
+    dades i les metadades (informació sobre el dataset, les seves files
+    i columnes). La classe *SummarizedExperiment* és una extensió d'
+    *ExpressionSet*, utilitzada per moltes aplicacions i bases de dades
+    (com és el cas de metabolomicsWorkbench). Quines són les seves
+    principals diferències amb la classe *ExpressionSet*?
+
+    ```{r}
+    #trec les dades que no són de pacients (les que no són sample)
+    data <- data[data$SampleType != "QC", ]
+
+    #preparem l'assay (valors metabolòmics) buscant les columnes que comencim per M seguida de números (MX-->traduir a expressió regular)
+    metabolite_cols <- grep("^M\\d+", names(data), value = TRUE)
+    assay_matrix <- as.matrix(data[, metabolite_cols]) #matriu numèrica
+    rownames(assay_matrix) <- data$SampleID 
+    assay_matrix <- t(assay_matrix)  #transposem: files = metabolits, columnes = mostres
+
+    #busquem els noms dels metabòlits (de 'Name' a 'Peak')
+    rownames(assay_matrix) <- peak$Name
+
+    # --- colData ---
+    col_data <- as.data.frame(data[, c("SampleID", "SampleType", "Class")])
+    rownames(col_data) <- col_data$SampleID
+    col_data <- col_data[, -1, drop = FALSE]
+
+    #dades de les mostres
+    #l'ordre ha de coincidir amb assay_matrix
+    row_data <- as.data.frame(peak)
+    rownames(row_data) <- row_data$Name
+    row_data <- row_data[rownames(assay_matrix), ]
+
+    #construim l'objecte se (sumarizedExperiment) amb les dades que hem carregat i obtingut
+    se <- SummarizedExperiment(
+      assays = list(intensities = assay_matrix),
+      colData = col_data,
+      rowData = row_data
+    )
+
+    #mirem com és l'objecte creat
+    se
+    ```
+
+3.  Porteu a terme una anàlisi exploratòria que us proporcioni una visió
+    general del dataset en la línia del que hem vist en les activitats
+    d'aquest repte.
+
+    Podem realitzar diferents anàlisis exploratoris:
+
+    ```{r}
+    #bàsics com l'estructura i dimensions del SummarizedExperiment
+    dim(se)  #número de metabolits x nombre de mostres
+    assayNames(se) #noms dels assays que hi ha
+    colnames(se) #com estan etiquetades les columnes
+    rownames(se) #com estan etiquetades les files
+
+    class(se) #classe de l'objecte se, que si s'ha fet correctament la creació del mateix ha de ser SumarizedExperiment
+    slotNames(se) #podem veure una mica com és l'extructura de l'objecte
+
+    #NAs, Nulls o 0
+    sum(is.na(assay(se)))
+    sum(assay(se) == 0)
+
+    #individus per classe (hi ha 3 classes, GC, BN i HE)
+    table(as.data.frame(colData(se))$Class)
+
+    #carreguem els paquets
+    library(ggplot2)
+
+    #dades d'expressió per fer una PCA
+    expr <- assay(se)
+    #treiem els metabòlits amb NA, Inf o variança zero
+    expr_clean <- expr[apply(expr, 1, function(x) {
+      all(is.finite(x)) && var(x) > 0
+    }), ]
+    #transposem per fer el posterior PCA (files = mostres, columnes = metabòlits) --> una PCA es fa a partir de mostres, no metabòlits i abans per crear l'objecte ho hem transposat, aquí també "desfem" el pas
+    expr_clean_t <- t(expr_clean)
+    #PCA
+    pca <- prcomp(expr_clean_t, scale. = TRUE)
+    meta <- as.data.frame(colData(se))
+    pca_df <- data.frame(pca$x[, 1:2], Class = meta$Class)
+    #viem el resultat i el plotem per interpretar-lo
+    ggplot(pca_df, aes(PC1, PC2, color = Class)) +
+      geom_point(size = 3) +
+      theme_minimal() +
+      labs(title = "PCA - Mostres segons Class")
+      
+    ```
+
+    ```{r}
+    #ANOVA
+    #anàlisi per veure diferències entre grups
+    anova_results <- apply(expr, 1, function(x) {
+      df <- data.frame(value = x, group = meta$Class)
+      summary(aov(value ~ group, data = df))[[1]][["Pr(>F)"]][1]
+    })
+    #en òmica i ciència de dades podem trobar falsos positius degut a la pròpia metodologia del bigdata (moltes comparacions i proves alhora), per això apliquem una correcció per múltiples comparacions (FDR de Benjamini-Hochberg)
+    fdr <- p.adjust(anova_results, method = "fdr")
+
+    #taula amb els resultats de l'anova
+    results <- data.frame(
+      MX = rownames(expr),
+      p_value = anova_results,
+      fdr = fdr,
+      stringsAsFactors = FALSE
+    )
+
+    #per poder treure'n informació biològica necessitem traduïr els noms MX per el metabòlit corresponent, per tant preparem rowData(se) com a taula amb Name i Label
+    row_info <- as.data.frame(rowData(se))
+    row_info$Name <- rownames(row_info)  #assegurem que 'Name' és columna
+    row_info$Label <- as.character(row_info$Label)
+
+    #MX <-> Name per relacionar-los per afegir Label (el nom del metabòlit)
+    results_amb_label <- merge(results, row_info[, c("Name", "Label")],
+                               by.x = "MX", by.y = "Name", all.x = TRUE)
+
+    #ordenem per FDR
+    results_amb_label <- results_amb_label[order(results_amb_label$fdr), ]
+
+    #guardem els que tenen un p-valor menor a 0.05 (fdr, p-valor ajustada)
+    significatius <- subset(results_amb_label, fdr < 0.05)
+
+    #mirem el resultat
+    significatius
+
+    ```
+
+    ```{r}
+    #carreguem els paquets necessaris
+    library(pheatmap)
+    library(RColorBrewer)
+
+    #metabòlits significatius amb els noms MX ja que es veurà millor el plot
+    metabolits_sign <- rownames(subset(results, fdr < 0.05))
+
+    #dades d'intensitat per a aquests metabolits
+    expr_sign <- expr[metabolits_sign, ]
+
+    #escalem (z-score per fila/metabolit)
+    expr_scaled <- t(scale(t(expr_sign)))
+
+    #anotaciem segons columna que indica el grup de la mostra (Class)
+    ann_col <- data.frame(Class = meta$Class)
+    rownames(ann_col) <- rownames(meta)
+
+    #heatmap
+    #he pensat en fer-ho segons una clusterització completa i l'altra amb els grups que tenim a Class
+    pheatmap(expr_scaled,
+             annotation_col = ann_col,
+             cluster_rows = TRUE,
+             cluster_cols = TRUE,
+             show_rownames = TRUE,
+             fontsize_row = 6,
+             color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdBu")))(100),
+             main = "Heatmap dels metabòlits significatius")
+
+    #ara fem el 2n heatmap, per tant ordenaem mostres segons el grup (Class)
+    sample_order <- order(ann_col$Class)
+
+    #reordenem la matriu d'expressió i les anotacions
+    expr_scaled_ordered <- expr_scaled[, sample_order]
+    ann_col_ordered <- ann_col[sample_order, , drop = FALSE]
+
+    #segon heatmap amb mostres ordenades per grup, sense clusterització
+    pheatmap(expr_scaled_ordered,
+             annotation_col = ann_col_ordered,
+             cluster_rows = TRUE,       #clustritzem metabòlits
+             cluster_cols = FALSE,      #no clustreritzem les mostres (estan ordenades per grup)
+             show_rownames = TRUE,
+             fontsize_row = 6,
+             color = colorRampPalette(rev(brewer.pal(n = 9, name = "RdBu")))(100),
+             main = "Heatmap dels metabòlits significatius agrupats per Class")
+
+
+    ```
+
+    ```{r}
+    #fem boxplots per els metabòlits significatius per a poder veure com són aquestes diferències significatives
+    #iterar per cada metabòlit ja que farem el mateix per tots ells
+    for (metab in metabolits_sign) {
+      #preparem les dades del gràfic
+      df <- data.frame(
+        value = expr[metab, ],
+        Class = meta$Class
+      )
+      #p-valor i FDR per posar-ho al títol i saber quin metabòlit i p-valor/FDR té
+      pval <- signif(anova_results[metab], 3)
+      fdr_val <- signif(fdr[metab], 3)
+      #boxplot
+      p <- ggplot(df, aes(x = Class, y = value, fill = Class)) +
+        geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+        geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+        labs(
+          title = paste0(metab, "\nP = ", pval, " | FDR = ", fdr_val),
+          y = "Intensitat",
+          x = "Classe"
+        ) +
+        theme_minimal(base_size = 12) +
+        theme(legend.position = "none")
+
+      print(p) #mostrem el plot
+
+    }
+
+    ```
+
+4.  Elabora un informe que descrigui el procés que heu realitzat,
+    incloent-hi la justificació de la selecció del dataset, la seva
+    incorporació al *summarizedExperiment*, l'anàlisi exploratòria de
+    les dades i la interpretació dels resultats des del punt de vista
+    biològic. L'extensió màxima d'aquest informe (sense tenir en compte
+    els Annexos) ha de ser de **10 pàgines**, en format PDF.
+
+5.  Creau un repositori de GitHub que contingui:
+
+    -   l' informe,
+
+    -   l'objecte de classe SummarizedExperiment que contingui les dades
+        i les metadades en format binari (. Rda),
+
+        ```{r}
+        save(se, file = "SummarizedExperiment_GastricCancer.Rda")
+        ```
+
+    -   el codi R per a l'exploració de les dades degudament comentat
+        (el control de versions del mateix s'ha de realitzar amb Git)
+
+    -   dades en format text i
+
+    -   les metadades acompanyades d'una breu descripció en un arxiu
+        markdown.
+
+El nom del repositori ha de ser 'Apellido1-Apellido2-Nombre-PEC1'. La
+direcció (URL) del repositori haurà d'estar inclosa en l'informe de
+manera clara. Teniu en compte que a través de CANVAS deveu lliurar
+únicament l'informe.
